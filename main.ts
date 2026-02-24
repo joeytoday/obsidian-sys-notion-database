@@ -1,6 +1,53 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, Modal, TFile, normalizePath } from 'obsidian';
-import { Client, isFullPage, isFullDatabase } from '@notionhq/client';
-import type { PageObjectResponse, DatabaseObjectResponse } from '@notionhq/client/build/src/api-endpoints';
+import { App, Notice, Plugin, PluginSettingTab, Setting, Modal, TFile, normalizePath, requestUrl } from 'obsidian';
+
+// ==================== Notion API 客户端 (使用 Obsidian requestUrl 避免 CORS) ====================
+
+class NotionClient {
+	private token: string;
+	private baseUrl = 'https://api.notion.com/v1';
+
+	constructor(token: string) {
+		this.token = token;
+	}
+
+	private async request<T>(path: string, options?: { method?: string; body?: any }): Promise<T> {
+		const response = await requestUrl({
+			url: `${this.baseUrl}${path}`,
+			method: options?.method || 'GET',
+			headers: {
+				'Authorization': `Bearer ${this.token}`,
+				'Notion-Version': '2022-06-28',
+				'Content-Type': 'application/json',
+			},
+			body: options?.body ? JSON.stringify(options.body) : undefined,
+		});
+
+		return response.json as T;
+	}
+
+	databases = {
+		retrieve: (databaseId: string) =>
+			this.request<{
+				id: string;
+				title: Array<{ plain_text: string }>;
+				properties: Record<string, any>;
+			}>(`/databases/${databaseId}`),
+
+		query: (databaseId: string, startCursor?: string) =>
+			this.request<{
+				results: Array<{
+					id: string;
+					object: string;
+					last_edited_time: string;
+					properties: Record<string, any>;
+				}>;
+				next_cursor: string | null;
+			}>(`/databases/${databaseId}/query`, {
+				method: 'POST',
+				body: startCursor ? { start_cursor: startCursor } : undefined,
+			}),
+	};
+}
 
 // ==================== 接口定义 ====================
 
@@ -66,7 +113,7 @@ const DEFAULT_SETTINGS: NotionSyncSettings = {
 
 export default class NotionSyncPlugin extends Plugin {
 	settings: NotionSyncSettings;
-	notionClient: Client | null = null;
+	notionClient: NotionClient | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -99,7 +146,7 @@ export default class NotionSyncPlugin extends Plugin {
 
 	initializeNotionClient() {
 		if (this.settings.notionToken) {
-			this.notionClient = new Client({ auth: this.settings.notionToken });
+			this.notionClient = new NotionClient(this.settings.notionToken);
 		} else {
 			this.notionClient = null;
 		}
@@ -109,9 +156,7 @@ export default class NotionSyncPlugin extends Plugin {
 	async fetchDatabaseProperties(): Promise<Record<string, any> | null> {
 		if (!this.notionClient || !this.settings.databaseId) return null;
 		try {
-			const response = await this.notionClient.databases.retrieve({
-				database_id: this.settings.databaseId,
-			}) as DatabaseObjectResponse;
+			const response = await this.notionClient.databases.retrieve(this.settings.databaseId);
 			return response.properties;
 		} catch (error) {
 			console.error('Failed to fetch database properties:', error);
@@ -127,15 +172,13 @@ export default class NotionSyncPlugin extends Plugin {
 		let cursor: string | undefined;
 
 		do {
-			const response = await this.notionClient.databases.query({
-				database_id: this.settings.databaseId,
-				start_cursor: cursor,
-			});
+			const response = await this.notionClient.databases.query(
+				this.settings.databaseId,
+				cursor
+			);
 
 			for (const page of response.results) {
-				if (!isFullPage(page)) continue;
-
-				const title = this.extractTitle(page);
+				const title = this.extractTitle(page.properties);
 				pages.push({
 					id: page.id,
 					lastEditedTime: page.last_edited_time,
@@ -151,10 +194,10 @@ export default class NotionSyncPlugin extends Plugin {
 	}
 
 	// 提取页面标题
-	extractTitle(page: PageObjectResponse): string {
+	extractTitle(properties: Record<string, any>): string {
 		// 优先从 title 属性获取
-		for (const [key, prop] of Object.entries(page.properties)) {
-			if (prop.type === 'title' && prop.title.length > 0) {
+		for (const [key, prop] of Object.entries(properties)) {
+			if (prop?.type === 'title' && prop.title?.length > 0) {
 				return prop.title.map((t: any) => t.plain_text).join('');
 			}
 		}
@@ -1149,12 +1192,8 @@ class NotionSyncSettingTab extends PluginSettingTab {
 		}
 
 		try {
-			const response = await this.plugin.notionClient.databases.retrieve({
-				database_id: this.plugin.settings.databaseId,
-			});
-			const dbTitle = isFullDatabase(response) && response.title?.[0]?.plain_text
-				? response.title[0].plain_text
-				: '未命名';
+			const response = await this.plugin.notionClient.databases.retrieve(this.plugin.settings.databaseId);
+			const dbTitle = response.title?.[0]?.plain_text ?? '未命名';
 			new Notice(`连接成功！数据库标题: ${dbTitle}`);
 		} catch (error) {
 			console.error('Connection test error:', error);
