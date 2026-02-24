@@ -1,5 +1,5 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting, Modal, TFile, normalizePath } from 'obsidian';
-import { Client, isFullPage } from '@notionhq/client';
+import { Client, isFullPage, isFullDatabase } from '@notionhq/client';
 import type { PageObjectResponse, DatabaseObjectResponse } from '@notionhq/client/build/src/api-endpoints';
 
 // ==================== 接口定义 ====================
@@ -12,6 +12,7 @@ interface NotionSyncSettings {
 	syncRules: SyncRule[];
 	fileTemplate: string;
 	filenameProperty: string;
+	templateFilePath: string;
 }
 
 interface PropertyMapping {
@@ -58,6 +59,7 @@ const DEFAULT_SETTINGS: NotionSyncSettings = {
 	syncRules: [],
 	fileTemplate: '---\n{{frontmatter}}\n---\n\n# {{title}}\n\n{{content}}',
 	filenameProperty: 'title',
+	templateFilePath: '',
 };
 
 // ==================== 主插件类 ====================
@@ -284,10 +286,28 @@ export default class NotionSyncPlugin extends Plugin {
 		return lines.join('\n');
 	}
 
+	// 获取模板内容
+	async getTemplateContent(): Promise<string> {
+		// 如果设置了模板文件路径，优先使用文件内容
+		if (this.settings.templateFilePath) {
+			const file = this.app.vault.getAbstractFileByPath(this.settings.templateFilePath);
+			if (file instanceof TFile) {
+				try {
+					return await this.app.vault.read(file);
+				} catch (error) {
+					console.error('读取模板文件失败:', error);
+					new Notice(`读取模板文件失败: ${error.message}`);
+				}
+			}
+		}
+		// 使用默认模板
+		return this.settings.fileTemplate;
+	}
+
 	// 生成文件内容
-	generateFileContent(page: PageInfo): string {
+	async generateFileContent(page: PageInfo): Promise<string> {
 		const frontmatter = this.generateFrontmatter(page.properties);
-		let content = this.settings.fileTemplate;
+		let content = await this.getTemplateContent();
 
 		// 替换模板变量
 		content = content.replace('{{frontmatter}}', frontmatter);
@@ -376,7 +396,7 @@ export default class NotionSyncPlugin extends Plugin {
 			const filePath = normalizePath(`${folderPath}/${filename}.md`);
 
 			const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-			const content = this.generateFileContent(page);
+			const content = await this.generateFileContent(page);
 
 			if (existingFile instanceof TFile) {
 				// 文件已存在，检查是否需要更新
@@ -637,6 +657,101 @@ class SyncResultModal extends Modal {
 	}
 }
 
+// 模板文件选择模态框
+class TemplateFileSuggestModal extends Modal {
+	onSelect: (file: TFile) => void;
+
+	constructor(app: App, onSelect: (file: TFile) => void) {
+		super(app);
+		this.onSelect = onSelect;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		this.setTitle('选择模板文件');
+
+		// 获取所有 markdown 文件
+		const files = this.app.vault.getMarkdownFiles();
+
+		// 创建文件列表
+		const listEl = contentEl.createDiv('template-file-list');
+		listEl.style.maxHeight = '400px';
+		listEl.style.overflow = 'auto';
+
+		if (files.length === 0) {
+			listEl.createEl('p', { text: '没有找到 Markdown 文件' });
+			return;
+		}
+
+		// 按路径排序
+		files.sort((a, b) => a.path.localeCompare(b.path));
+
+		files.forEach((file) => {
+			const itemEl = listEl.createDiv('template-file-item');
+			itemEl.style.padding = '8px 12px';
+			itemEl.style.cursor = 'pointer';
+			itemEl.style.borderRadius = '4px';
+			itemEl.style.marginBottom = '4px';
+
+			// 鼠标悬停效果
+			itemEl.addEventListener('mouseenter', () => {
+				itemEl.style.backgroundColor = 'var(--background-modifier-hover)';
+			});
+			itemEl.addEventListener('mouseleave', () => {
+				itemEl.style.backgroundColor = '';
+			});
+
+			// 文件名和路径
+			const nameEl = itemEl.createDiv('template-file-name');
+			nameEl.style.fontWeight = '500';
+			nameEl.textContent = file.name;
+
+			const pathEl = itemEl.createDiv('template-file-path');
+			pathEl.style.fontSize = '0.85em';
+			pathEl.style.color = 'var(--text-muted)';
+			pathEl.textContent = file.path;
+
+			// 点击选择
+			itemEl.addEventListener('click', () => {
+				this.onSelect(file);
+				this.close();
+			});
+		});
+
+		// 添加搜索框
+		const searchContainer = contentEl.createDiv('search-container');
+		searchContainer.style.marginBottom = '12px';
+		const searchInput = searchContainer.createEl('input', {
+			type: 'text',
+			placeholder: '搜索文件...',
+		});
+		searchInput.style.width = '100%';
+		searchInput.style.padding = '8px';
+
+		searchInput.addEventListener('input', (e) => {
+			const query = (e.target as HTMLInputElement).value.toLowerCase();
+			const items = listEl.querySelectorAll('.template-file-item');
+			items.forEach((item) => {
+				const path = item.querySelector('.template-file-path')?.textContent || '';
+				const name = item.querySelector('.template-file-name')?.textContent || '';
+				if (path.toLowerCase().includes(query) || name.toLowerCase().includes(query)) {
+					(item as HTMLElement).style.display = 'block';
+				} else {
+					(item as HTMLElement).style.display = 'none';
+				}
+			});
+		});
+
+		// 将搜索框插入到列表之前
+		contentEl.insertBefore(searchContainer, listEl);
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
 // ==================== 设置页面 ====================
 
 class NotionSyncSettingTab extends PluginSettingTab {
@@ -763,9 +878,45 @@ class NotionSyncSettingTab extends PluginSettingTab {
 		// 文件模板配置
 		containerEl.createEl('h3', { text: '文件模板配置' });
 
+		// 模板文件选择
+		const templateFileSetting = new Setting(containerEl)
+			.setName('模板文件')
+			.setDesc('选择本地仓库中的文件作为模板（可选）。如果设置了模板文件，将优先使用文件内容而不是下方文本框中的模板。')
+			.addText((text) => {
+				text
+					.setPlaceholder('未选择文件')
+					.setValue(this.plugin.settings.templateFilePath)
+					.onChange(async (value) => {
+						this.plugin.settings.templateFilePath = value;
+						await this.plugin.saveSettings();
+					});
+				text.inputEl.style.width = '250px';
+			})
+			.addButton((button) => {
+				button
+					.setButtonText('选择文件')
+					.onClick(() => {
+						new TemplateFileSuggestModal(this.app, (file) => {
+							this.plugin.settings.templateFilePath = file.path;
+							this.plugin.saveSettings();
+							// 更新文本框显示
+							templateFileSetting.controlEl.querySelector('input')!.value = file.path;
+						}).open();
+					});
+			})
+			.addButton((button) => {
+				button
+					.setButtonText('清除')
+					.onClick(async () => {
+						this.plugin.settings.templateFilePath = '';
+						await this.plugin.saveSettings();
+						templateFileSetting.controlEl.querySelector('input')!.value = '';
+					});
+			});
+
 		new Setting(containerEl)
-			.setName('文件模板')
-			.setDesc('使用 {{变量名}} 作为模板变量，{{frontmatter}} 表示所有启用的属性，{{title}} 表示标题，{{content}} 表示内容占位符')
+			.setName('默认文件模板')
+			.setDesc('使用 {{变量名}} 作为模板变量，{{frontmatter}} 表示所有启用的属性，{{title}} 表示标题，{{content}} 表示内容占位符。当未设置模板文件时使用此模板。')
 			.addTextArea((text) => {
 				text
 					.setPlaceholder('---\n{{frontmatter}}\n---\n\n# {{title}}\n\n{{content}}')
@@ -1001,7 +1152,10 @@ class NotionSyncSettingTab extends PluginSettingTab {
 			const response = await this.plugin.notionClient.databases.retrieve({
 				database_id: this.plugin.settings.databaseId,
 			});
-			new Notice(`连接成功！数据库标题: ${(response.title?.[0] as any)?.plain_text || '未命名'}`);
+			const dbTitle = isFullDatabase(response) && response.title?.[0]?.plain_text
+				? response.title[0].plain_text
+				: '未命名';
+			new Notice(`连接成功！数据库标题: ${dbTitle}`);
 		} catch (error) {
 			console.error('Connection test error:', error);
 			new Notice(`连接失败: ${error.message}`);
