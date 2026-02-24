@@ -1,94 +1,139 @@
-# Obsidian Sample Plugin
+# Notion Database Sync
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+将 Notion 数据库记录同步到 Obsidian 笔记的插件。
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## 功能特性
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+### ✅ 1. 基础配置
+- 支持配置 Notion Token 和 Database ID
+- 支持测试连接验证配置
 
-## First time developing plugins?
+### ✅ 2. 属性映射
+- 自动获取 Notion 数据库属性列表
+- 支持 Notion 属性与 Obsidian 属性名称映射
+- 可单独选择是否同步每个属性
+- 支持将属性作为模板变量使用
 
-Quick starting guide for new plugin devs:
+### ✅ 3. 同步规则
+- 支持添加多条同步判定规则
+- 支持条件：等于、不为空、为真、为假
+- 只有满足所有规则的记录才会被同步
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+### ✅ 4. 同步文件夹
+- 可指定同步文件保存的文件夹路径
+- 自动创建不存在的文件夹
 
-## Releasing new releases
+### ✅ 5. 同步命令
+- 命令面板中可唤起同步操作
+- 快捷键支持
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+### ✅ 6. 增量同步
+- 自动判断新增和更新的记录
+- 只同步有变化的文件
+- 跳过未变更的记录以提高效率
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+### ✅ 7. 同步结果展示
+- 同步完成后显示统计信息
+- 分类展示：新增文件、更新文件、未变更、跳过
+- 每个文件可直接点击查看
 
-## Adding your plugin to the community plugin list
+### ✅ 8. 对比功能
+- 更新文件支持查看对比
+- 显示新增（绿色）和删除（红色）的内容
+- 行级差异对比
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+## 支持的 Notion 属性类型
 
-## How to use
+- title (标题)
+- rich_text (富文本)
+- number (数字)
+- select (单选)
+- multi_select (多选)
+- checkbox (复选框)
+- url (链接)
+- email (邮箱)
+- phone_number (电话)
+- date (日期)
+- status (状态)
+- formula (公式)
+- rollup (汇总)
+- relation (关联)
+- created_time (创建时间)
+- last_edited_time (最后编辑时间)
+- created_by (创建者)
+- last_edited_by (最后编辑者)
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+## 安装方法
 
-## Manually installing the plugin
+1. 确保已安装 Node.js (v16+)
+2. 在项目目录运行 `npm install`
+3. 运行 `npm run build` 编译插件
+4. 将编译后的 `main.js`, `manifest.json`, `styles.css` 复制到 Obsidian 插件目录：
+   - Windows: `%USERPROFILE%\Documents\Obsidian Vault\.obsidian\plugins\notion-database-sync\`
+   - macOS: `~/Documents/Obsidian Vault/.obsidian/plugins/notion-database-sync/`
+   - Linux: `~/Documents/Obsidian Vault/.obsidian/plugins/notion-database-sync/`
+5. 在 Obsidian 设置中启用插件
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+## 使用方法
 
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
+### 1. 配置插件
+- 打开 Obsidian 设置
+- 找到 "Notion Database Sync" 设置页面
+- 填写 Notion Token 和 Database ID
+- 点击"测试连接"验证配置
 
-## Funding URL
+### 2. 配置属性映射
+- 点击"刷新属性"获取数据库属性
+- 自定义 Obsidian 属性名称
+- 选择要同步的属性
+- 选择可作为模板变量的属性
 
-You can include funding URLs where people who use your plugin can financially support it.
+### 3. 配置同步规则（可选）
+- 添加同步判定规则
+- 例如：只同步 "状态" 为 "已完成" 的记录
 
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
+### 4. 执行同步
+- 打开命令面板（Ctrl/Cmd + P）
+- 输入 "Sync Notion Database"
+- 或使用设置的快捷键
 
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+### 5. 查看结果
+- 同步完成后会显示结果弹窗
+- 可查看新增和更新的文件列表
+- 更新文件可点击查看对比
+
+## 文件模板
+
+支持使用以下变量：
+- `{{frontmatter}}` - 所有启用的属性（YAML格式）
+- `{{title}}` - 页面标题
+- `{{content}}` - 内容占位符
+- `{{属性名}}` - 自定义属性值
+
+默认模板：
+```markdown
+---
+{{frontmatter}}
+---
+
+# {{title}}
+
+{{content}}
 ```
 
-If you have multiple URLs, you can also do:
+## 开发
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
+```bash
+# 安装依赖
+npm install
+
+# 开发模式（自动编译）
+npm run dev
+
+# 生产构建
+npm run build
 ```
 
-## API Documentation
+## 许可证
 
-See https://github.com/obsidianmd/obsidian-api
+MIT License
