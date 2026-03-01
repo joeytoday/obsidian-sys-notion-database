@@ -96,6 +96,15 @@ interface PageInfo {
 	title: string;
 }
 
+interface FileSelectionItem {
+	page: PageInfo;
+	filename: string;
+	filePath: string;
+	exists: boolean;
+	selected: boolean;
+	overwrite: boolean;
+}
+
 // ==================== 默认设置 ====================
 
 const DEFAULT_SETTINGS: NotionSyncSettings = {
@@ -382,10 +391,9 @@ export default class NotionSyncPlugin extends Plugin {
 			return;
 		}
 
-		new Notice('开始同步 Notion 数据库...');
-
 		try {
 			// 获取所有页面
+			new Notice('正在获取 Notion 数据库页面...');
 			const pages = await this.fetchAllPages();
 			console.log(`Fetched ${pages.length} pages from Notion`);
 
@@ -393,8 +401,86 @@ export default class NotionSyncPlugin extends Plugin {
 			const folderPath = normalizePath(this.settings.syncFolder);
 			await this.ensureFolderExists(folderPath);
 
-			// 执行同步
-			const result = await this.performSync(pages, folderPath);
+			// 构建文件选择列表
+			const selectionItems: FileSelectionItem[] = [];
+			let skippedCount = 0;
+
+			for (const page of pages) {
+				// 检查同步规则
+				if (!this.checkSyncRules(page.properties)) {
+					skippedCount++;
+					continue;
+				}
+
+				const filename = this.generateFilename(page);
+				const filePath = normalizePath(`${folderPath}/${filename}.md`);
+				const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+
+				selectionItems.push({
+					page,
+					filename,
+					filePath,
+					exists: existingFile instanceof TFile,
+					selected: true, // 默认全选
+					overwrite: true, // 默认覆盖
+				});
+			}
+
+			if (selectionItems.length === 0) {
+				new Notice('没有满足同步规则的文件');
+				return;
+			}
+
+			// 显示文件选择弹窗
+			new FileSyncSelectionModal(
+				this.app,
+				selectionItems,
+				folderPath,
+				(selectedItems) => this.executeSelectedSync(selectedItems, skippedCount)
+			).open();
+
+		} catch (error) {
+			console.error('Sync error:', error);
+			new Notice(`同步失败: ${error.message}`);
+		}
+	}
+
+	// 执行用户选择的同步
+	async executeSelectedSync(selectedItems: FileSelectionItem[], skippedCount: number): Promise<void> {
+		const result: SyncResult = {
+			created: [],
+			updated: [],
+			unchanged: 0,
+			skipped: skippedCount,
+		};
+
+		try {
+			for (const item of selectedItems) {
+				const content = await this.generateFileContent(item.page);
+
+				if (item.exists) {
+					if (item.overwrite) {
+						// 覆盖已存在的文件
+						const existingFile = this.app.vault.getAbstractFileByPath(item.filePath);
+						if (existingFile instanceof TFile) {
+							const oldContent = await this.app.vault.read(existingFile);
+							await this.app.vault.modify(existingFile, content);
+							result.updated.push({
+								filename: item.filename,
+								oldContent,
+								newContent: content,
+							});
+						}
+					} else {
+						// 不覆盖，跳过
+						result.unchanged++;
+					}
+				} else {
+					// 创建新文件
+					await this.app.vault.create(item.filePath, content);
+					result.created.push(item.filename);
+				}
+			}
 
 			// 显示结果
 			new Notice(
@@ -417,57 +503,6 @@ export default class NotionSyncPlugin extends Plugin {
 		if (!(await adapter.exists(path))) {
 			await adapter.mkdir(path);
 		}
-	}
-
-	// 执行同步
-	async performSync(pages: PageInfo[], folderPath: string): Promise<SyncResult> {
-		const result: SyncResult = {
-			created: [],
-			updated: [],
-			unchanged: 0,
-			skipped: 0,
-		};
-
-		for (const page of pages) {
-			// 检查同步规则
-			if (!this.checkSyncRules(page.properties)) {
-				result.skipped++;
-				continue;
-			}
-
-			const filename = this.generateFilename(page);
-			const filePath = normalizePath(`${folderPath}/${filename}.md`);
-
-			const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-			const content = await this.generateFileContent(page);
-
-			if (existingFile instanceof TFile) {
-				// 文件已存在，检查是否需要更新
-				const existingContent = await this.app.vault.read(existingFile);
-				const lastSyncMatch = existingContent.match(/notion_last_edited:\s*(.+)/);
-				const lastSyncTime = lastSyncMatch ? new Date(lastSyncMatch[1]).getTime() : 0;
-				const notionEditTime = new Date(page.lastEditedTime).getTime();
-
-				if (notionEditTime > lastSyncTime || existingContent !== content) {
-					// 需要更新，保存旧内容用于对比
-					const oldContent = existingContent;
-					await this.app.vault.modify(existingFile, content);
-					result.updated.push({
-						filename,
-						oldContent,
-						newContent: content,
-					});
-				} else {
-					result.unchanged++;
-				}
-			} else {
-				// 创建新文件
-				await this.app.vault.create(filePath, content);
-				result.created.push(filename);
-			}
-		}
-
-		return result;
 	}
 }
 
@@ -588,6 +623,147 @@ class DiffModal extends Modal {
 		}
 
 		return result;
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
+// ==================== 文件选择弹窗 ====================
+
+class FileSyncSelectionModal extends Modal {
+	items: FileSelectionItem[];
+	onConfirm: (selectedItems: FileSelectionItem[]) => void;
+	folderPath: string;
+
+	constructor(app: App, items: FileSelectionItem[], folderPath: string, onConfirm: (selectedItems: FileSelectionItem[]) => void) {
+		super(app);
+		this.items = items;
+		this.folderPath = folderPath;
+		this.onConfirm = onConfirm;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		this.setTitle('选择要同步的文件');
+
+		// 说明文字
+		const descDiv = contentEl.createDiv();
+		descDiv.style.marginBottom = '16px';
+		descDiv.createEl('p', { text: `共找到 ${this.items.length} 个满足同步规则的文件，请选择要同步的文件：` });
+
+		// 全选/取消全选按钮
+		const selectAllDiv = contentEl.createDiv();
+		selectAllDiv.style.marginBottom = '12px';
+		selectAllDiv.style.display = 'flex';
+		selectAllDiv.style.gap = '8px';
+
+		const selectAllBtn = selectAllDiv.createEl('button', { text: '全选' });
+		selectAllBtn.addEventListener('click', () => {
+			this.items.forEach(item => item.selected = true);
+			this.renderFileList(contentEl);
+		});
+
+		const deselectAllBtn = selectAllDiv.createEl('button', { text: '取消全选' });
+		deselectAllBtn.addEventListener('click', () => {
+			this.items.forEach(item => item.selected = false);
+			this.renderFileList(contentEl);
+		});
+
+		// 文件列表容器
+		this.renderFileList(contentEl);
+
+		// 底部按钮
+		const buttonDiv = contentEl.createDiv();
+		buttonDiv.style.marginTop = '20px';
+		buttonDiv.style.display = 'flex';
+		buttonDiv.style.gap = '12px';
+		buttonDiv.style.justifyContent = 'flex-end';
+
+		const cancelBtn = buttonDiv.createEl('button', { text: '取消' });
+		cancelBtn.addEventListener('click', () => {
+			this.close();
+		});
+
+		const confirmBtn = buttonDiv.createEl('button', { text: '开始同步', cls: 'mod-cta' });
+		confirmBtn.addEventListener('click', () => {
+			const selectedItems = this.items.filter(item => item.selected);
+			if (selectedItems.length === 0) {
+				new Notice('请至少选择一个文件进行同步');
+				return;
+			}
+			this.close();
+			this.onConfirm(selectedItems);
+		});
+	}
+
+	renderFileList(contentEl: HTMLElement) {
+		// 移除旧列表
+		const oldList = contentEl.querySelector('.file-selection-list');
+		if (oldList) {
+			oldList.remove();
+		}
+
+		const listContainer = contentEl.createDiv('file-selection-list');
+		listContainer.style.maxHeight = '400px';
+		listContainer.style.overflowY = 'auto';
+		listContainer.style.border = '1px solid var(--background-modifier-border)';
+		listContainer.style.borderRadius = '4px';
+
+		this.items.forEach((item, index) => {
+			const row = listContainer.createDiv('file-selection-item');
+			row.style.display = 'flex';
+			row.style.alignItems = 'center';
+			row.style.padding = '8px 12px';
+			row.style.borderBottom = '1px solid var(--background-modifier-border)';
+			row.style.gap = '12px';
+
+			// 复选框
+			const checkbox = row.createEl('input', { type: 'checkbox' });
+			checkbox.checked = item.selected;
+			checkbox.addEventListener('change', (e) => {
+				this.items[index].selected = (e.target as HTMLInputElement).checked;
+			});
+
+			// 文件名
+			const nameSpan = row.createSpan({ text: item.filename });
+			nameSpan.style.flex = '1';
+
+			// 状态标签
+			if (item.exists) {
+				const existsTag = row.createSpan({ text: '已存在' });
+				existsTag.style.fontSize = '12px';
+				existsTag.style.padding = '2px 8px';
+				existsTag.style.borderRadius = '4px';
+				existsTag.style.backgroundColor = 'var(--text-accent)';
+				existsTag.style.color = 'var(--text-on-accent)';
+
+				// 覆盖选项
+				const overwriteLabel = row.createEl('label');
+				overwriteLabel.style.display = 'flex';
+				overwriteLabel.style.alignItems = 'center';
+				overwriteLabel.style.gap = '4px';
+				overwriteLabel.style.fontSize = '12px';
+
+				const overwriteCheckbox = overwriteLabel.createEl('input', { type: 'checkbox' });
+				overwriteCheckbox.checked = item.overwrite;
+				overwriteCheckbox.addEventListener('change', (e) => {
+					this.items[index].overwrite = (e.target as HTMLInputElement).checked;
+				});
+
+				overwriteLabel.createSpan({ text: '覆盖' });
+			} else {
+				const newTag = row.createSpan({ text: '新建' });
+				newTag.style.fontSize = '12px';
+				newTag.style.padding = '2px 8px';
+				newTag.style.borderRadius = '4px';
+				newTag.style.backgroundColor = 'var(--interactive-success)';
+				newTag.style.color = 'var(--text-on-accent)';
+			}
+		});
 	}
 
 	onClose() {
@@ -855,6 +1031,18 @@ class NotionSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// 测试连接
+		new Setting(containerEl)
+			.setName('测试连接')
+			.setDesc('测试与 Notion API 的连接')
+			.addButton((button) =>
+				button
+					.setButtonText('测试连接')
+					.onClick(async () => {
+						await this.testConnection();
+					})
+			);
+
 		// 文件名配置
 		containerEl.createEl('h3', { text: '文件名配置' });
 
@@ -971,19 +1159,6 @@ class NotionSyncSettingTab extends PluginSettingTab {
 				text.inputEl.rows = 6;
 				text.inputEl.style.width = '100%';
 			});
-
-		// 测试连接
-		containerEl.createEl('h3', { text: '测试' });
-		new Setting(containerEl)
-			.setName('测试连接')
-			.setDesc('测试与 Notion API 的连接')
-			.addButton((button) =>
-				button
-					.setButtonText('测试连接')
-					.onClick(async () => {
-						await this.testConnection();
-					})
-			);
 	}
 
 	async refreshProperties(): Promise<void> {
